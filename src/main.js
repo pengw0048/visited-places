@@ -75,6 +75,7 @@ const state = {
   viewMode: getStoredViewMode(),
   detailCountries: getStoredDetailCountries(),
   selectedDetailCountry: "US",
+  placeMenuOpen: false,
   levelLabels: loadStoredLevelLabels(),
   levels: loadStoredLevels(),
   datasets: new Map(),
@@ -110,8 +111,20 @@ app.innerHTML = `
         <div class="section-heading">
           <span>Map Settings</span>
         </div>
-        <label class="field-label" for="detailCountrySelect">Country</label>
-        <select id="detailCountrySelect" class="select-field"></select>
+        <label class="field-label" for="placeSearchInput">Country or region</label>
+        <div class="place-combobox" id="placeCombobox">
+          <input
+            id="placeSearchInput"
+            class="search-field"
+            type="search"
+            autocomplete="off"
+            role="combobox"
+            aria-expanded="false"
+            aria-controls="placeOptions"
+            placeholder="Search countries, states, provinces..."
+          />
+          <div class="place-options" id="placeOptions" role="listbox" hidden></div>
+        </div>
         <label class="toggle-row">
           <span>Show subdivisions for this country</span>
           <input type="checkbox" id="detailCountryToggle" />
@@ -161,7 +174,9 @@ app.innerHTML = `
 
 const els = {
   viewModeSelect: document.querySelector("#viewModeSelect"),
-  detailCountrySelect: document.querySelector("#detailCountrySelect"),
+  placeCombobox: document.querySelector("#placeCombobox"),
+  placeSearchInput: document.querySelector("#placeSearchInput"),
+  placeOptions: document.querySelector("#placeOptions"),
   detailCountryToggle: document.querySelector("#detailCountryToggle"),
   clearCurrentButton: document.querySelector("#clearCurrentButton"),
   visitedCount: document.querySelector("#visitedCount"),
@@ -257,7 +272,9 @@ function buildStaticControls() {
 
 function renderDetailControls() {
   if (!state.detailOptions.length) {
-    els.detailCountrySelect.innerHTML = `<option value="">Loading countries...</option>`;
+    els.placeSearchInput.value = "Loading countries...";
+    els.placeSearchInput.disabled = true;
+    closePlaceMenu({ resetInput: false });
     els.detailCountryToggle.checked = false;
     els.detailCountryToggle.disabled = true;
     return;
@@ -267,10 +284,11 @@ function renderDetailControls() {
     state.selectedDetailCountry = state.detailOptions[0].iso;
   }
 
-  els.detailCountrySelect.innerHTML = state.detailOptions
-    .map((option) => `<option value="${escapeHtml(option.iso)}">${escapeHtml(option.label)}</option>`)
-    .join("");
-  els.detailCountrySelect.value = state.selectedDetailCountry;
+  els.placeSearchInput.disabled = false;
+  if (!state.placeMenuOpen || document.activeElement !== els.placeSearchInput) {
+    syncPlaceSearchLabel();
+  }
+  renderPlaceOptions();
   els.detailCountryToggle.disabled = false;
   els.detailCountryToggle.checked = Boolean(state.detailCountries[state.selectedDetailCountry]);
 }
@@ -299,8 +317,27 @@ function bindEvents() {
     switchViewMode(event.target.value);
   });
 
-  els.detailCountrySelect.addEventListener("change", (event) => {
-    selectCountry(event.target.value, { zoom: true, clearSelection: true, announce: true });
+  els.placeSearchInput.addEventListener("focus", () => {
+    openPlaceMenu();
+    els.placeSearchInput.select();
+  });
+
+  els.placeSearchInput.addEventListener("input", () => {
+    openPlaceMenu();
+  });
+
+  els.placeSearchInput.addEventListener("keydown", (event) => {
+    handlePlaceSearchKeydown(event);
+  });
+
+  els.placeOptions.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+  });
+
+  els.placeOptions.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-place-option]");
+    if (!option) return;
+    selectPlaceOption(option.dataset.placeType, option.dataset.placeId);
   });
 
   els.detailCountryToggle.addEventListener("change", (event) => {
@@ -336,6 +373,11 @@ function bindEvents() {
     renderAll();
     announce(`Cleared ${dataset.label}`);
   });
+
+  document.addEventListener("click", (event) => {
+    if (els.placeCombobox.contains(event.target)) return;
+    closePlaceMenu();
+  });
 }
 
 async function switchDataset(datasetKey, options = {}) {
@@ -343,6 +385,7 @@ async function switchDataset(datasetKey, options = {}) {
 
   state.datasetKey = datasetKey;
   state.selectedId = null;
+  closePlaceMenu({ resetInput: false });
   hideTooltip();
   localStorage.setItem(STORAGE_KEYS.dataset, datasetKey);
 
@@ -362,6 +405,7 @@ function switchViewMode(viewMode) {
   if (!VIEW_MODES[viewMode]) return;
 
   state.viewMode = viewMode;
+  closePlaceMenu();
   hideTooltip();
   els.viewModeSelect.value = viewMode;
   localStorage.setItem(STORAGE_KEYS.viewMode, viewMode);
@@ -377,6 +421,7 @@ async function switchDetailCountry(detailKey, enabled) {
 
   state.detailCountries[detailKey] = enabled;
   state.selectedId = null;
+  closePlaceMenu();
   hideLevelMenu();
   hideTooltip();
   localStorage.setItem(STORAGE_KEYS.detailCountries, JSON.stringify(state.detailCountries));
@@ -393,6 +438,7 @@ function selectCountry(countryIso, options = {}) {
   if (!countryIso || !hasDetailOption(countryIso)) return;
 
   state.selectedDetailCountry = countryIso;
+  closePlaceMenu({ resetInput: false });
 
   if (options.clearSelection) {
     state.selectedId = null;
@@ -401,6 +447,7 @@ function selectCountry(countryIso, options = {}) {
   }
 
   renderDetailControls();
+  syncPlaceSearchLabel();
   renderMapHeader();
 
   if (options.clearSelection) {
@@ -658,6 +705,135 @@ function renderStats() {
   els.averageLevel.textContent = marked.length ? average.toFixed(1) : "-";
 }
 
+function openPlaceMenu() {
+  state.placeMenuOpen = true;
+  els.placeSearchInput.setAttribute("aria-expanded", "true");
+  renderPlaceOptions();
+}
+
+function closePlaceMenu(options = {}) {
+  state.placeMenuOpen = false;
+  els.placeSearchInput.setAttribute("aria-expanded", "false");
+  els.placeOptions.hidden = true;
+
+  if (options.resetInput !== false) {
+    syncPlaceSearchLabel();
+  }
+}
+
+function syncPlaceSearchLabel() {
+  els.placeSearchInput.value = getPlaceInputLabel();
+}
+
+function getPlaceInputLabel() {
+  const selected = getSelectedFeature();
+  return selected?.properties.displayName ?? getDetailOptionLabel(state.selectedDetailCountry);
+}
+
+function renderPlaceOptions() {
+  if (!state.placeMenuOpen) {
+    els.placeOptions.hidden = true;
+    return;
+  }
+
+  const options = getPlaceOptions(els.placeSearchInput.value).slice(0, 24);
+  els.placeOptions.hidden = false;
+
+  if (!options.length) {
+    els.placeOptions.innerHTML = `<div class="empty-state compact">No matching places.</div>`;
+    return;
+  }
+
+  els.placeOptions.innerHTML = options
+    .map(
+      (option) => `
+        <button
+          class="place-option ${option.selected ? "is-selected" : ""}"
+          type="button"
+          role="option"
+          data-place-option
+          data-place-type="${escapeHtml(option.type)}"
+          data-place-id="${escapeHtml(option.id)}"
+          aria-selected="${option.selected ? "true" : "false"}"
+        >
+          <span>${escapeHtml(option.label)}</span>
+          <small>${escapeHtml(option.meta)}</small>
+        </button>
+      `,
+    )
+    .join("");
+}
+
+function getPlaceOptions(query) {
+  const loaded = state.datasets.get(state.datasetKey);
+  const terms = query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  const countries = state.detailOptions.map((option) => ({
+    type: "country",
+    id: option.iso,
+    label: option.label,
+    meta: isDetailEnabledForCountry(option.iso) ? "Country / subdivisions on" : "Country",
+    searchText: `${option.label} ${option.iso} country`.toLowerCase(),
+    selected: !state.selectedId && option.iso === state.selectedDetailCountry,
+  }));
+
+  const regions =
+    loaded?.features
+      .filter((feature) => feature.properties.sourceType !== "country")
+      .map((feature) => {
+        const country = getDetailOptionLabel(getDetailCountryKey(feature.properties.countryIso));
+        const level = getRegionLevel(feature.properties.regionId);
+
+        return {
+          type: "region",
+          id: feature.properties.regionId,
+          label: feature.properties.displayName,
+          meta: `${getRegionKindLabel(feature)} / ${country}${level ? ` / Level ${level}` : ""}`,
+          searchText: feature.properties.searchText,
+          selected: feature.properties.regionId === state.selectedId,
+        };
+      }) ?? [];
+
+  return [...countries, ...regions].filter((option) =>
+    terms.length ? terms.every((term) => option.searchText.includes(term)) : true,
+  );
+}
+
+function handlePlaceSearchKeydown(event) {
+  if (event.key === "Escape") {
+    closePlaceMenu();
+    els.placeSearchInput.blur();
+    return;
+  }
+
+  if (event.key !== "Enter") return;
+
+  const option = els.placeOptions.querySelector("[data-place-option]");
+  if (!option || els.placeOptions.hidden) return;
+
+  event.preventDefault();
+  selectPlaceOption(option.dataset.placeType, option.dataset.placeId);
+}
+
+function selectPlaceOption(type, id) {
+  if (type === "country") {
+    selectCountry(id, { zoom: true, clearSelection: true, announce: true });
+    closePlaceMenu({ resetInput: false });
+    syncPlaceSearchLabel();
+    return;
+  }
+
+  if (type === "region") {
+    closePlaceMenu({ resetInput: false });
+    selectRegion(id, { focusMap: true, openMenu: true });
+    syncPlaceSearchLabel();
+  }
+}
+
 function renderLevelButtons(activeLevel) {
   return LEVELS.map(
     (level) => `
@@ -822,6 +998,7 @@ function selectRegion(regionId, options = {}) {
   syncSelectedCountryFromFeature(feature);
   state.selectedId = regionId;
   state.menuRegionId = options.openMenu ? regionId : state.menuRegionId;
+  renderDetailControls();
   renderMapHeader();
   renderMap();
 
@@ -840,6 +1017,7 @@ function clearSelectedRegion() {
   state.selectedId = null;
   hideLevelMenu();
   hideTooltip();
+  renderDetailControls();
   renderMap();
 }
 

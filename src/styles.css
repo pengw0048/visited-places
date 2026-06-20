@@ -156,6 +156,72 @@ button {
   box-shadow: 0 0 0 3px rgb(241 184 74 / 0.18);
 }
 
+.place-combobox {
+  position: relative;
+}
+
+.place-options {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  display: grid;
+  gap: 4px;
+  max-height: min(342px, 54vh);
+  overflow: auto;
+  padding: 6px;
+  background: rgb(24 24 23 / 0.98);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 18px 46px rgb(0 0 0 / 0.38);
+}
+
+.place-options[hidden] {
+  display: none;
+}
+
+.place-option {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-height: 46px;
+  padding: 8px 10px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.place-option:hover,
+.place-option:focus-visible,
+.place-option.is-selected {
+  border-color: var(--line-strong);
+  background: var(--panel-strong);
+}
+
+.place-option.is-selected {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.place-option span,
+.place-option small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.place-option span {
+  font-weight: 750;
+}
+
+.place-option small {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .detail-controls {
   display: grid;
   gap: 8px;
