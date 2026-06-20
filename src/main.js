@@ -10,6 +10,8 @@ const LEVELS = [
   { value: 5, label: "Lived or returned", color: "#d65a6f" },
 ];
 
+const DATA_BASE_URL = `${import.meta.env.BASE_URL}data/`;
+
 const VIEW_MODES = {
   naturalEarth: { label: "Natural Earth" },
   equalEarth: { label: "Equal Earth" },
@@ -31,24 +33,24 @@ const DATASETS = {
 
 const SOURCE_DATASETS = {
   countries: {
-    url: "/data/countries-admin0.json",
+    url: `${DATA_BASE_URL}countries-admin0.json`,
     kind: "geojson",
     sourceType: "country",
   },
   globalAdmin1: {
-    url: "/data/admin1-10m.json",
+    url: `${DATA_BASE_URL}admin1-10m.json`,
     kind: "geojson",
     sourceType: "admin1",
   },
   usStates: {
-    url: "/data/states-10m.json",
+    url: `${DATA_BASE_URL}states-10m.json`,
     kind: "topojson",
     objectName: "states",
     sourceType: "usState",
     detailIso: "US",
   },
   chinaProvinces: {
-    url: "/data/china-provinces.json",
+    url: `${DATA_BASE_URL}china-provinces.json`,
     kind: "geojson",
     sourceType: "chinaProvince",
     detailIso: "CN",
