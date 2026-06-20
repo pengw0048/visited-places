@@ -76,7 +76,6 @@ const state = {
   detailCountries: getStoredDetailCountries(),
   selectedDetailCountry: "US",
   levelLabels: loadStoredLevelLabels(),
-  search: "",
   levels: loadStoredLevels(),
   datasets: new Map(),
   sourceData: new Map(),
@@ -120,10 +119,6 @@ app.innerHTML = `
 
         <label class="field-label" for="viewModeSelect">Projection</label>
         <select id="viewModeSelect" class="select-field"></select>
-
-        <label class="field-label" for="searchInput">Find region</label>
-        <input id="searchInput" class="search-field" type="search" autocomplete="off" placeholder="Search countries, states, provinces..." />
-        <div class="region-list compact-results" id="regionList"></div>
       </section>
 
       <section class="stats-grid" aria-label="Current map stats">
@@ -172,8 +167,6 @@ const els = {
   visitedCount: document.querySelector("#visitedCount"),
   coverage: document.querySelector("#coverage"),
   averageLevel: document.querySelector("#averageLevel"),
-  searchInput: document.querySelector("#searchInput"),
-  regionList: document.querySelector("#regionList"),
   mapEyebrow: document.querySelector("#mapEyebrow"),
   mapTitle: document.querySelector("#mapTitle"),
   statusLine: document.querySelector("#statusLine"),
@@ -323,17 +316,6 @@ function bindEvents() {
     renderOpenLevelMenu();
   });
 
-  els.searchInput.addEventListener("input", (event) => {
-    state.search = event.target.value;
-    renderRegionList();
-  });
-
-  els.regionList.addEventListener("click", (event) => {
-    const row = event.target.closest(".region-row");
-    if (!row) return;
-    selectRegion(row.dataset.id, { focusMap: true, openMenu: true });
-  });
-
   els.levelMenu.addEventListener("click", (event) => handleLevelMenuClick(event));
 
   els.mapFrame.addEventListener("click", (event) => {
@@ -361,9 +343,7 @@ async function switchDataset(datasetKey, options = {}) {
 
   state.datasetKey = datasetKey;
   state.selectedId = null;
-  state.search = "";
   hideTooltip();
-  els.searchInput.value = "";
   localStorage.setItem(STORAGE_KEYS.dataset, datasetKey);
 
   await ensureDataset(datasetKey);
@@ -422,7 +402,6 @@ function selectCountry(countryIso, options = {}) {
 
   renderDetailControls();
   renderMapHeader();
-  renderRegionList();
 
   if (options.clearSelection) {
     renderMap();
@@ -648,7 +627,6 @@ function getDisplayName(properties, sourceType, fallback) {
 function renderAll() {
   renderMapHeader();
   renderStats();
-  renderRegionList();
   renderMap();
   renderMapLegend();
 }
@@ -678,43 +656,6 @@ function renderStats() {
   els.coverage.textContent =
     marked.length > 0 && coveragePercent < 1 ? "<1%" : `${Math.round(coveragePercent)}%`;
   els.averageLevel.textContent = marked.length ? average.toFixed(1) : "-";
-}
-
-function renderRegionList() {
-  const loaded = state.datasets.get(state.datasetKey);
-  if (!loaded) return;
-
-  const query = state.search.trim().toLowerCase();
-  if (!query) {
-    els.regionList.innerHTML = "";
-    return;
-  }
-
-  const regions = loaded.features
-    .filter((feature) => feature.properties.searchText.includes(query))
-    .slice(0, 12);
-
-  if (!regions.length) {
-    els.regionList.innerHTML = `<div class="empty-state compact">No matching regions.</div>`;
-    return;
-  }
-
-  els.regionList.innerHTML = regions
-    .map((feature) => {
-      const id = feature.properties.regionId;
-      const level = getRegionLevel(id);
-      const isSelected = state.selectedId === id;
-
-      return `
-        <div class="region-row ${isSelected ? "is-selected" : ""}" data-id="${escapeHtml(id)}">
-          <button class="region-name" type="button">
-            <span>${escapeHtml(feature.properties.displayName)}</span>
-            <small>${getRegionKindLabel(feature)}${level ? ` / Level ${level}` : ""}</small>
-          </button>
-        </div>
-      `;
-    })
-    .join("");
 }
 
 function renderLevelButtons(activeLevel) {
@@ -882,7 +823,6 @@ function selectRegion(regionId, options = {}) {
   state.selectedId = regionId;
   state.menuRegionId = options.openMenu ? regionId : state.menuRegionId;
   renderMapHeader();
-  renderRegionList();
   renderMap();
 
   if (options.focusMap) {
@@ -900,7 +840,6 @@ function clearSelectedRegion() {
   state.selectedId = null;
   hideLevelMenu();
   hideTooltip();
-  renderRegionList();
   renderMap();
 }
 
