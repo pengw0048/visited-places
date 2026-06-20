@@ -103,12 +103,6 @@ app.innerHTML = `
         <span>personal map tracker</span>
       </div>
     </div>
-    <div class="top-actions">
-      <button class="text-button" type="button" id="resetViewButton">Reset</button>
-      <button class="text-button" type="button" id="exportButton">Export</button>
-      <button class="text-button" type="button" id="importButton">Import</button>
-      <input class="visually-hidden" type="file" id="importFile" accept="application/json,.json" hidden />
-    </div>
   </header>
 
   <main class="workspace">
@@ -158,7 +152,7 @@ app.innerHTML = `
           <span id="mapEyebrow"></span>
           <h1 id="mapTitle"></h1>
         </div>
-        <output class="status-line" id="statusLine" aria-live="polite"></output>
+        <output class="status-line" id="statusLine" aria-live="polite" hidden></output>
       </div>
       <div class="map-frame" id="mapFrame">
         <svg id="mapSvg" role="img" aria-labelledby="mapTitle"></svg>
@@ -174,10 +168,6 @@ const els = {
   viewModeSelect: document.querySelector("#viewModeSelect"),
   detailCountrySelect: document.querySelector("#detailCountrySelect"),
   detailCountryToggle: document.querySelector("#detailCountryToggle"),
-  resetViewButton: document.querySelector("#resetViewButton"),
-  exportButton: document.querySelector("#exportButton"),
-  importButton: document.querySelector("#importButton"),
-  importFile: document.querySelector("#importFile"),
   clearCurrentButton: document.querySelector("#clearCurrentButton"),
   visitedCount: document.querySelector("#visitedCount"),
   coverage: document.querySelector("#coverage"),
@@ -348,13 +338,10 @@ function bindEvents() {
 
   els.mapFrame.addEventListener("click", (event) => {
     if (event.target.closest(".level-menu") || event.target.closest(".map-legend")) return;
-    if (event.target === els.mapSvg) hideLevelMenu();
+    if (!event.target.closest(".region")) {
+      clearSelectedRegion();
+    }
   });
-
-  els.resetViewButton.addEventListener("click", () => resetView(true));
-  els.exportButton.addEventListener("click", exportData);
-  els.importButton.addEventListener("click", () => els.importFile.click());
-  els.importFile.addEventListener("change", importData);
 
   els.clearCurrentButton.addEventListener("click", () => {
     const dataset = DATASETS[state.datasetKey];
@@ -434,6 +421,7 @@ function selectCountry(countryIso, options = {}) {
   }
 
   renderDetailControls();
+  renderMapHeader();
   renderRegionList();
 
   if (options.clearSelection) {
@@ -455,6 +443,7 @@ function syncSelectedCountryFromFeature(feature) {
 
   state.selectedDetailCountry = countryIso;
   renderDetailControls();
+  renderMapHeader();
 }
 
 async function ensureDataset(datasetKey) {
@@ -666,8 +655,11 @@ function renderAll() {
 
 function renderMapHeader() {
   const dataset = DATASETS[state.datasetKey];
-  els.mapEyebrow.textContent = `${dataset.optionLabel} / ${VIEW_MODES[state.viewMode].label}`;
-  els.mapTitle.textContent = dataset.label;
+  const countryLabel = getDetailOptionLabel(state.selectedDetailCountry);
+  const detailLabel = isDetailEnabledForCountry(state.selectedDetailCountry) ? "Subdivisions" : "Country level";
+
+  els.mapEyebrow.textContent = `${dataset.optionLabel} / ${VIEW_MODES[state.viewMode].label} / ${detailLabel}`;
+  els.mapTitle.textContent = countryLabel || dataset.label;
 }
 
 function renderStats() {
@@ -889,6 +881,7 @@ function selectRegion(regionId, options = {}) {
   syncSelectedCountryFromFeature(feature);
   state.selectedId = regionId;
   state.menuRegionId = options.openMenu ? regionId : state.menuRegionId;
+  renderMapHeader();
   renderRegionList();
   renderMap();
 
@@ -899,6 +892,16 @@ function selectRegion(regionId, options = {}) {
   if (options.openMenu) {
     openLevelMenu(regionId, options.point);
   }
+}
+
+function clearSelectedRegion() {
+  if (!state.selectedId && !state.menuRegionId && els.levelMenu.hidden) return;
+
+  state.selectedId = null;
+  hideLevelMenu();
+  hideTooltip();
+  renderRegionList();
+  renderMap();
 }
 
 function zoomToFeature(regionId) {
@@ -1104,55 +1107,6 @@ function hideTooltip() {
   els.tooltip.hidden = true;
 }
 
-function exportData() {
-  const payload = {
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    settings: {
-      detailCountries: state.detailCountries,
-      levelLabels: state.levelLabels,
-    },
-    maps: state.levels,
-  };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-
-  link.href = url;
-  link.download = `visited-places-${new Date().toISOString().slice(0, 10)}.json`;
-  link.click();
-  URL.revokeObjectURL(url);
-  announce("Export ready");
-}
-
-async function importData(event) {
-  const [file] = event.target.files;
-  if (!file) return;
-
-  try {
-    const text = await file.text();
-    const payload = JSON.parse(text);
-    const maps = sanitizeImportedMaps(payload.maps ?? payload);
-
-    state.levels = maps;
-    state.detailCountries = sanitizeDetailCountries(payload.settings?.detailCountries ?? state.detailCountries);
-    state.levelLabels = sanitizeLevelLabels(payload.settings?.levelLabels ?? state.levelLabels);
-    localStorage.setItem(STORAGE_KEYS.detailCountries, JSON.stringify(state.detailCountries));
-    saveLevelLabels();
-    state.datasets.delete(state.datasetKey);
-    await ensureDataset(state.datasetKey);
-    renderDetailControls();
-    saveLevels();
-    renderAll();
-    announce("Import complete");
-  } catch (error) {
-    console.error(error);
-    announce("Import failed");
-  } finally {
-    els.importFile.value = "";
-  }
-}
-
 function sanitizeImportedMaps(maps) {
   const sanitized = {};
 
@@ -1264,9 +1218,11 @@ function clamp(value, min, max) {
 
 function announce(message) {
   els.statusLine.textContent = message;
+  els.statusLine.hidden = !message;
   window.clearTimeout(announce.timeout);
   announce.timeout = window.setTimeout(() => {
     els.statusLine.textContent = "";
+    els.statusLine.hidden = true;
   }, 2400);
 }
 
