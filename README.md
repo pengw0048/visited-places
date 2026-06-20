@@ -29,6 +29,8 @@ This is a static app. The repository should not commit `dist` or `node_modules`;
 
 The workflow uses `BASE_PATH=/${{ github.event.repository.name }}/` so project Pages URLs load Vite assets from the correct subpath.
 
+For a private repository, GitHub Pages must be supported by the account plan. If Pages is not available for the private repository, either upgrade the plan or make the repository public, then enable Pages with GitHub Actions as the source and run the deploy workflow.
+
 ## Data
 
 Boundary files are stored in `public/data` so the app can run without calling map data APIs at runtime.
