@@ -16,6 +16,8 @@ Click a region to open a local 1-5 level menu. The map-corner legend labels can 
 
 The map view supports Natural Earth, Equal Earth, Mercator, Equirectangular, and a globe-style 3D orthographic mode. Flat projections can be panned and zoomed; globe mode can be rotated and zoomed.
 
+User map data is encoded into the URL hash. Copying the page URL preserves subdivision toggles, marked levels, and custom legend labels without a backend.
+
 ## Development
 
 ```bash

@@ -70,14 +70,17 @@ const STORAGE_KEYS = {
   levels: "visitedPlaces:levels",
 };
 
+const URL_DATA_PARAM = "data";
+const urlUserData = loadUrlUserData();
+
 const state = {
   datasetKey: getStoredDatasetKey(),
   viewMode: getStoredViewMode(),
-  detailCountries: getStoredDetailCountries(),
+  detailCountries: urlUserData?.detailCountries ?? getStoredDetailCountries(),
   selectedDetailCountry: "US",
   placeMenuOpen: false,
-  levelLabels: loadStoredLevelLabels(),
-  levels: loadStoredLevels(),
+  levelLabels: urlUserData?.levelLabels ?? loadStoredLevelLabels(),
+  levels: urlUserData?.levels ?? loadStoredLevels(),
   datasets: new Map(),
   sourceData: new Map(),
   detailOptions: [],
@@ -259,7 +262,7 @@ const resizeObserver = new ResizeObserver(() => {
 });
 resizeObserver.observe(els.mapFrame);
 
-switchDataset(state.datasetKey);
+switchDataset(state.datasetKey).then(syncUrlData);
 
 function buildStaticControls() {
   els.viewModeSelect.innerHTML = Object.entries(VIEW_MODES)
@@ -387,7 +390,7 @@ async function switchDataset(datasetKey, options = {}) {
   state.selectedId = null;
   closePlaceMenu({ resetInput: false });
   hideTooltip();
-  localStorage.setItem(STORAGE_KEYS.dataset, datasetKey);
+  writeLocalStorage(STORAGE_KEYS.dataset, datasetKey);
 
   await ensureDataset(datasetKey);
 
@@ -408,7 +411,7 @@ function switchViewMode(viewMode) {
   closePlaceMenu();
   hideTooltip();
   els.viewModeSelect.value = viewMode;
-  localStorage.setItem(STORAGE_KEYS.viewMode, viewMode);
+  writeLocalStorage(STORAGE_KEYS.viewMode, viewMode);
   resetFlatZoomState();
   state.globeRotation = getDefaultGlobeRotation(state.datasetKey);
   state.globeZoom = 1;
@@ -424,7 +427,7 @@ async function switchDetailCountry(detailKey, enabled) {
   closePlaceMenu();
   hideLevelMenu();
   hideTooltip();
-  localStorage.setItem(STORAGE_KEYS.detailCountries, JSON.stringify(state.detailCountries));
+  saveDetailCountries();
   state.datasets.delete(state.datasetKey);
   await ensureDataset(state.datasetKey);
   renderDetailControls();
@@ -1224,6 +1227,99 @@ function hideTooltip() {
   els.tooltip.hidden = true;
 }
 
+function loadUrlUserData() {
+  const encoded = new URLSearchParams(window.location.hash.slice(1)).get(URL_DATA_PARAM);
+  if (!encoded) return null;
+
+  try {
+    const payload = decodeUrlPayload(encoded);
+    const detailSource = {};
+
+    for (const countryIso of Array.isArray(payload.d) ? payload.d : []) {
+      const detailKey = normalizeDetailCountryKey(countryIso);
+      if (detailKey) detailSource[detailKey] = true;
+    }
+
+    for (const countryIso of Array.isArray(payload.x) ? payload.x : []) {
+      const detailKey = normalizeDetailCountryKey(countryIso);
+      if (detailKey) detailSource[detailKey] = false;
+    }
+
+    return {
+      detailCountries: sanitizeDetailCountries(detailSource),
+      levelLabels: sanitizeLevelLabels(payload.l ?? {}),
+      levels: sanitizeImportedMaps({ global: payload.m ?? {} }),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function syncUrlData() {
+  const payload = getUrlPayload();
+  const params = new URLSearchParams(window.location.hash.slice(1));
+
+  if (Object.keys(payload).length > 1) {
+    params.set(URL_DATA_PARAM, encodeUrlPayload(payload));
+  } else {
+    params.delete(URL_DATA_PARAM);
+  }
+
+  const nextHash = params.toString();
+  const nextUrl = `${window.location.pathname}${window.location.search}${nextHash ? `#${nextHash}` : ""}`;
+  window.history.replaceState(null, "", nextUrl);
+}
+
+function getUrlPayload() {
+  const payload = { v: 1 };
+  const defaults = getDefaultDetailCountries();
+  const enabledDetails = [];
+  const disabledDetails = [];
+
+  for (const [countryIso, enabled] of Object.entries(state.detailCountries).sort(([a], [b]) => a.localeCompare(b))) {
+    const defaultEnabled = defaults[countryIso] ?? false;
+    if (enabled && !defaultEnabled) enabledDetails.push(countryIso);
+    if (!enabled && defaultEnabled) disabledDetails.push(countryIso);
+  }
+
+  const marks = Object.fromEntries(
+    Object.entries(state.levels.global ?? {})
+      .filter(([, level]) => normalizeLevel(level))
+      .sort(([a], [b]) => a.localeCompare(b)),
+  );
+  const labels = Object.fromEntries(
+    LEVELS.map((level) => [level.value, state.levelLabels[level.value]])
+      .filter(([level, label]) => String(label ?? "").trim() && label !== LEVELS.find((item) => item.value === level)?.label)
+      .sort(([a], [b]) => Number(a) - Number(b)),
+  );
+
+  if (enabledDetails.length) payload.d = enabledDetails;
+  if (disabledDetails.length) payload.x = disabledDetails;
+  if (Object.keys(marks).length) payload.m = marks;
+  if (Object.keys(labels).length) payload.l = labels;
+
+  return payload;
+}
+
+function encodeUrlPayload(payload) {
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  let binary = "";
+
+  for (let index = 0; index < bytes.length; index += 8192) {
+    binary += String.fromCharCode(...bytes.slice(index, index + 8192));
+  }
+
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+function decodeUrlPayload(value) {
+  const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
 function sanitizeImportedMaps(maps) {
   const sanitized = {};
 
@@ -1251,7 +1347,8 @@ function loadStoredLevels() {
 }
 
 function saveLevels() {
-  localStorage.setItem(STORAGE_KEYS.levels, JSON.stringify(state.levels));
+  writeLocalStorage(STORAGE_KEYS.levels, JSON.stringify(state.levels));
+  syncUrlData();
 }
 
 function getStoredDetailCountries() {
@@ -1263,19 +1360,34 @@ function getStoredDetailCountries() {
 }
 
 function sanitizeDetailCountries(source) {
-  const sanitized = {};
+  const sanitized = getDefaultDetailCountries();
 
   for (const [key, value] of Object.entries(source ?? {})) {
-    if (typeof value === "boolean") sanitized[key] = value;
-  }
-
-  for (const [countryIso, detail] of Object.entries(HIGH_DETAIL_COUNTRIES)) {
-    if (typeof sanitized[countryIso] !== "boolean") {
-      sanitized[countryIso] = detail.defaultEnabled;
-    }
+    const detailKey = normalizeDetailCountryKey(key);
+    if (detailKey && typeof value === "boolean") sanitized[detailKey] = value;
   }
 
   return sanitized;
+}
+
+function normalizeDetailCountryKey(value) {
+  const countryIso = String(value ?? "").trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(countryIso) ? countryIso : null;
+}
+
+function getDefaultDetailCountries() {
+  const defaults = {};
+
+  for (const [countryIso, detail] of Object.entries(HIGH_DETAIL_COUNTRIES)) {
+    defaults[countryIso] = detail.defaultEnabled;
+  }
+
+  return defaults;
+}
+
+function saveDetailCountries() {
+  writeLocalStorage(STORAGE_KEYS.detailCountries, JSON.stringify(state.detailCountries));
+  syncUrlData();
 }
 
 function loadStoredLevelLabels() {
@@ -1298,7 +1410,8 @@ function sanitizeLevelLabels(source) {
 }
 
 function saveLevelLabels() {
-  localStorage.setItem(STORAGE_KEYS.levelLabels, JSON.stringify(state.levelLabels));
+  writeLocalStorage(STORAGE_KEYS.levelLabels, JSON.stringify(state.levelLabels));
+  syncUrlData();
 }
 
 function getLevelLabel(level) {
@@ -1306,13 +1419,29 @@ function getLevelLabel(level) {
 }
 
 function getStoredDatasetKey() {
-  const stored = localStorage.getItem(STORAGE_KEYS.dataset);
+  const stored = readLocalStorage(STORAGE_KEYS.dataset);
   return DATASETS[stored] ? stored : "global";
 }
 
 function getStoredViewMode() {
-  const stored = localStorage.getItem(STORAGE_KEYS.viewMode);
+  const stored = readLocalStorage(STORAGE_KEYS.viewMode);
   return VIEW_MODES[stored] ? stored : "globe";
+}
+
+function readLocalStorage(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // The URL remains the source of truth when local storage is unavailable.
+  }
 }
 
 function getDefaultGlobeRotation() {
