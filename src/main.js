@@ -70,7 +70,7 @@ const STORAGE_KEYS = {
   levels: "visitedPlaces:levels",
 };
 
-const URL_DATA_PARAM = "data";
+const CODE_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const urlUserData = loadUrlUserData();
 
 const state = {
@@ -83,7 +83,10 @@ const state = {
   levels: urlUserData?.levels ?? loadStoredLevels(),
   datasets: new Map(),
   sourceData: new Map(),
+  regionCodeById: new Map(),
+  regionIdByCode: new Map(),
   detailOptions: [],
+  pendingUrlMarks: urlUserData?.marks ?? null,
   selectedId: null,
   menuRegionId: null,
   currentProjection: null,
@@ -393,6 +396,7 @@ async function switchDataset(datasetKey, options = {}) {
   writeLocalStorage(STORAGE_KEYS.dataset, datasetKey);
 
   await ensureDataset(datasetKey);
+  applyPendingUrlMarks();
 
   resetFlatZoomState();
   state.globeRotation = getDefaultGlobeRotation(datasetKey);
@@ -427,12 +431,13 @@ async function switchDetailCountry(detailKey, enabled) {
   closePlaceMenu();
   hideLevelMenu();
   hideTooltip();
-  saveDetailCountries();
+  saveDetailCountries(false);
   state.datasets.delete(state.datasetKey);
   await ensureDataset(state.datasetKey);
   renderDetailControls();
   renderAll();
   zoomToCountry(detailKey);
+  syncUrlData();
   const label = getDetailOptionLabel(detailKey);
   announce(`${label}: ${enabled ? "detail on" : "detail off"}`);
 }
@@ -476,7 +481,11 @@ function syncSelectedCountryFromFeature(feature) {
 }
 
 async function ensureDataset(datasetKey) {
-  if (state.datasets.has(datasetKey)) return state.datasets.get(datasetKey);
+  if (state.datasets.has(datasetKey)) {
+    const loaded = state.datasets.get(datasetKey);
+    indexRegionCodes(loaded.features);
+    return loaded;
+  }
 
   const sourceEntries = await loadSourceEntries();
   updateDetailOptions(sourceEntries);
@@ -500,6 +509,7 @@ async function ensureDataset(datasetKey) {
   };
 
   state.datasets.set(datasetKey, loaded);
+  indexRegionCodes(normalizedFeatures);
   return loaded;
 }
 
@@ -1228,53 +1238,47 @@ function hideTooltip() {
 }
 
 function loadUrlUserData() {
-  const encoded = new URLSearchParams(window.location.hash.slice(1)).get(URL_DATA_PARAM);
-  if (!encoded) return null;
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const detailSource = {};
+  const labelSource = {};
+  const marks = parseUrlMarks(params.get("m"));
 
-  try {
-    const payload = decodeUrlPayload(encoded);
-    const detailSource = {};
-
-    for (const countryIso of Array.isArray(payload.d) ? payload.d : []) {
-      const detailKey = normalizeDetailCountryKey(countryIso);
-      if (detailKey) detailSource[detailKey] = true;
-    }
-
-    for (const countryIso of Array.isArray(payload.x) ? payload.x : []) {
-      const detailKey = normalizeDetailCountryKey(countryIso);
-      if (detailKey) detailSource[detailKey] = false;
-    }
-
-    return {
-      detailCountries: sanitizeDetailCountries(detailSource),
-      levelLabels: sanitizeLevelLabels(payload.l ?? {}),
-      levels: sanitizeImportedMaps({ global: payload.m ?? {} }),
-    };
-  } catch {
-    return null;
+  for (const countryIso of splitUrlList(params.get("d"))) {
+    const detailKey = normalizeDetailCountryKey(countryIso);
+    if (detailKey) detailSource[detailKey] = true;
   }
+
+  for (const countryIso of splitUrlList(params.get("x"))) {
+    const detailKey = normalizeDetailCountryKey(countryIso);
+    if (detailKey) detailSource[detailKey] = false;
+  }
+
+  for (const level of LEVELS) {
+    const label = params.get(`l${level.value}`);
+    if (label !== null) labelSource[level.value] = label;
+  }
+
+  if (!marks.length && !Object.keys(detailSource).length && !Object.keys(labelSource).length) return null;
+
+  return {
+    detailCountries: sanitizeDetailCountries(detailSource),
+    levelLabels: sanitizeLevelLabels(labelSource),
+    levels: sanitizeImportedMaps({}),
+    marks,
+  };
 }
 
 function syncUrlData() {
-  const payload = getUrlPayload();
   const params = new URLSearchParams(window.location.hash.slice(1));
-
-  if (Object.keys(payload).length > 1) {
-    params.set(URL_DATA_PARAM, encodeUrlPayload(payload));
-  } else {
-    params.delete(URL_DATA_PARAM);
-  }
-
-  const nextHash = params.toString();
-  const nextUrl = `${window.location.pathname}${window.location.search}${nextHash ? `#${nextHash}` : ""}`;
-  window.history.replaceState(null, "", nextUrl);
-}
-
-function getUrlPayload() {
-  const payload = { v: 1 };
   const defaults = getDefaultDetailCountries();
   const enabledDetails = [];
   const disabledDetails = [];
+  const markString = getUrlMarkString();
+
+  params.delete("m");
+  params.delete("d");
+  params.delete("x");
+  for (const level of LEVELS) params.delete(`l${level.value}`);
 
   for (const [countryIso, enabled] of Object.entries(state.detailCountries).sort(([a], [b]) => a.localeCompare(b))) {
     const defaultEnabled = defaults[countryIso] ?? false;
@@ -1282,42 +1286,87 @@ function getUrlPayload() {
     if (!enabled && defaultEnabled) disabledDetails.push(countryIso);
   }
 
-  const marks = Object.fromEntries(
-    Object.entries(state.levels.global ?? {})
-      .filter(([, level]) => normalizeLevel(level))
-      .sort(([a], [b]) => a.localeCompare(b)),
-  );
-  const labels = Object.fromEntries(
-    LEVELS.map((level) => [level.value, state.levelLabels[level.value]])
-      .filter(([level, label]) => String(label ?? "").trim() && label !== LEVELS.find((item) => item.value === level)?.label)
-      .sort(([a], [b]) => Number(a) - Number(b)),
-  );
-
-  if (enabledDetails.length) payload.d = enabledDetails;
-  if (disabledDetails.length) payload.x = disabledDetails;
-  if (Object.keys(marks).length) payload.m = marks;
-  if (Object.keys(labels).length) payload.l = labels;
-
-  return payload;
-}
-
-function encodeUrlPayload(payload) {
-  const bytes = new TextEncoder().encode(JSON.stringify(payload));
-  let binary = "";
-
-  for (let index = 0; index < bytes.length; index += 8192) {
-    binary += String.fromCharCode(...bytes.slice(index, index + 8192));
+  if (markString) params.set("m", markString);
+  if (enabledDetails.length) params.set("d", enabledDetails.join("."));
+  if (disabledDetails.length) params.set("x", disabledDetails.join("."));
+  for (const level of LEVELS) {
+    const label = String(state.levelLabels[level.value] ?? "").trim();
+    if (label && label !== level.label) params.set(`l${level.value}`, label);
   }
 
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  const nextHash = params.toString();
+  const nextUrl = `${window.location.pathname}${window.location.search}${nextHash ? `#${nextHash}` : ""}`;
+  window.history.replaceState(null, "", nextUrl);
 }
 
-function decodeUrlPayload(value) {
-  const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
-  const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
-  const binary = atob(padded);
-  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  return JSON.parse(new TextDecoder().decode(bytes));
+function indexRegionCodes(features) {
+  state.regionCodeById.clear();
+  state.regionIdByCode.clear();
+
+  for (const [index, feature] of features.entries()) {
+    const code = indexToCode(index);
+    const regionId = feature.properties.regionId;
+    state.regionCodeById.set(regionId, code);
+    state.regionIdByCode.set(code, regionId);
+  }
+}
+
+function applyPendingUrlMarks() {
+  if (!state.pendingUrlMarks) return;
+
+  const levels = {};
+
+  for (const mark of state.pendingUrlMarks) {
+    const regionId = state.regionIdByCode.get(mark.code);
+    if (regionId) levels[regionId] = mark.level;
+  }
+
+  state.levels[state.datasetKey] = levels;
+  state.pendingUrlMarks = null;
+}
+
+function getUrlMarkString() {
+  return Object.entries(state.levels[state.datasetKey] ?? {})
+    .map(([regionId, level]) => {
+      const normalizedLevel = normalizeLevel(level);
+      const code = state.regionCodeById.get(regionId);
+      return normalizedLevel && code ? `${code}${normalizedLevel}` : null;
+    })
+    .filter(Boolean)
+    .sort()
+    .join(".");
+}
+
+function parseUrlMarks(value) {
+  return splitUrlList(value)
+    .map((entry) => {
+      const level = normalizeLevel(entry.slice(-1));
+      const code = entry.slice(0, -1);
+      return level && code ? { code, level } : null;
+    })
+    .filter(Boolean);
+}
+
+function splitUrlList(value) {
+  return String(value ?? "")
+    .split(".")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function indexToCode(index) {
+  if (index <= 0) return CODE_ALPHABET[0];
+
+  const base = CODE_ALPHABET.length;
+  let code = "";
+  let value = index;
+
+  while (value > 0) {
+    code = CODE_ALPHABET[value % base] + code;
+    value = Math.floor(value / base);
+  }
+
+  return code;
 }
 
 function sanitizeImportedMaps(maps) {
@@ -1385,9 +1434,9 @@ function getDefaultDetailCountries() {
   return defaults;
 }
 
-function saveDetailCountries() {
+function saveDetailCountries(sync = true) {
   writeLocalStorage(STORAGE_KEYS.detailCountries, JSON.stringify(state.detailCountries));
-  syncUrlData();
+  if (sync) syncUrlData();
 }
 
 function loadStoredLevelLabels() {
